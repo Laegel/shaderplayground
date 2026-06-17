@@ -3,6 +3,18 @@ name = "shaderplayground"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = ["desktop"]
+desktop = []
+
+[[bin]]
+name = "shaderplayground"
+path = "src/main.rs"
+required-features = ["desktop"]
+
 [dependencies]
 wgpu = "25"
 winit = "0.30"
@@ -13,3 +25,16 @@ pollster = "0.4"
 bytemuck = "1"
 env_logger = "0.11"
 egui_extras = {version="0.32.3", features=["syntect"]}
+
+[target.'cfg(target_os = "android")'.dependencies]
+android-activity = {version = "0.6", features=["game-activity"]}
+android_logger = "0.14"
+log = "0.4"
+
+[package.metadata.android]
+package = "com.shaderplayground.app"
+apk_name = "ShaderPlayground"
+build_targets = ["aarch64-linux-android", "armv7-linux-androideabi", "x86_64-linux-android"]
+min_sdk_version = 24
+version_code = 1
+version_name = "0.1"

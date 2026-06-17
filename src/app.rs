@@ -19,7 +19,9 @@ struct Uniforms {
 
 pub struct App {
     pub window: Arc<Window>,
-    surface: wgpu::Surface<'static>,
+    #[allow(dead_code)]
+    instance: wgpu::Instance,
+    surface: Option<wgpu::Surface<'static>>,
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
@@ -32,6 +34,7 @@ pub struct App {
     uniform_buffer: wgpu::Buffer,
 
     time: f32,
+    mouse_pos: [f32; 2],
 
     editor: Editor,
     pending_compile: bool,
@@ -52,16 +55,20 @@ impl App {
     pub async fn new(window: Arc<Window>) -> Self {
         let size = window.inner_size();
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::VULKAN,
+            backends: if cfg!(target_os = "android") {
+                wgpu::Backends::VULKAN | wgpu::Backends::GL
+            } else {
+                wgpu::Backends::VULKAN
+            },
             ..Default::default()
         });
 
-        let surface = instance.create_surface(window.clone()).unwrap();
+        let surface = Some(instance.create_surface(window.clone()).unwrap());
 
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: Some(&surface),
+                compatible_surface: surface.as_ref(),
                 force_fallback_adapter: false,
             })
             .await
@@ -78,7 +85,7 @@ impl App {
             .await
             .unwrap();
 
-        let caps = surface.get_capabilities(&adapter);
+        let caps = surface.as_ref().unwrap().get_capabilities(&adapter);
         let format = caps
             .formats
             .iter()
@@ -94,7 +101,7 @@ impl App {
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
         };
-        surface.configure(&device, &config);
+        surface.as_ref().unwrap().configure(&device, &config);
 
         let quad_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("quad_vs"),
@@ -157,6 +164,8 @@ impl App {
             &default_frag,
         );
 
+        let mouse_pos = [0.0, 0.0];
+
         let egui_ctx = egui::Context::default();
         let egui_state = egui_winit::State::new(
             egui_ctx.clone(),
@@ -172,6 +181,7 @@ impl App {
 
         Self {
             window,
+            instance,
             surface,
             device,
             queue,
@@ -183,6 +193,7 @@ impl App {
             bind_group,
             uniform_buffer,
             time: 0.0,
+            mouse_pos,
             editor: Editor::new(default_frag_src),
             pending_compile: false,
             egui_state,
@@ -248,8 +259,24 @@ impl App {
             self.size = PhysicalSize::new(width, height);
             self.config.width = width;
             self.config.height = height;
-            self.surface.configure(&self.device, &self.config);
+            if let Some(ref surface) = self.surface {
+                surface.configure(&self.device, &self.config);
+            }
         }
+    }
+
+    #[allow(dead_code)]
+    pub fn on_resume(&mut self) {
+        if self.surface.is_none() {
+            let new_surface = self.instance.create_surface(self.window.clone()).unwrap();
+            new_surface.configure(&self.device, &self.config);
+            self.surface = Some(new_surface);
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn on_suspend(&mut self) {
+        self.surface = None;
     }
 
     pub fn update(&mut self) {
@@ -264,15 +291,6 @@ impl App {
             self.fps_timer = now;
         }
         self.editor.fps = self.fps;
-
-        let uniforms = Uniforms {
-            time: self.time,
-            _pad: 0.0,
-            resolution: [self.config.width as f32, self.config.height as f32],
-            mouse: [0.0, 0.0],
-        };
-        self.queue
-            .write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
 
         if self.pending_compile && self.editor.needs_recompile(DEBOUNCE_MS) {
             self.pending_compile = false;
@@ -296,6 +314,21 @@ impl App {
         let clipped = self.egui_ctx.tessellate(full_output.shapes, scale);
         self.egui_state
             .handle_platform_output(&self.window, full_output.platform_output);
+
+        self.mouse_pos = self
+            .egui_ctx
+            .pointer_interact_pos()
+            .map(|p| [p.x as f32 * scale, p.y as f32 * scale])
+            .unwrap_or(self.mouse_pos);
+
+        let uniforms = Uniforms {
+            time: self.time,
+            _pad: 0.0,
+            resolution: [self.config.width as f32, self.config.height as f32],
+            mouse: self.mouse_pos,
+        };
+        self.queue
+            .write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
 
         self.clipped_meshes = clipped;
         self.textures_delta = full_output.textures_delta;
@@ -332,7 +365,8 @@ impl App {
             return Ok(());
         }
 
-        let output = self.surface.get_current_texture()?;
+        let surface = self.surface.as_ref().ok_or(wgpu::SurfaceError::Lost)?;
+        let output = surface.get_current_texture()?;
         let view = output
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());

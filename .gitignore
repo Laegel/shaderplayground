@@ -1,1 +1,6 @@
 /target
+android/app/build/
+android/.gradle/
+android/local.properties
+android/gradle/wrapper/gradle-wrapper.jar
+android/app/src/main/jniLibs/
